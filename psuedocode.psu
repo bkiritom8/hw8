@@ -1,0 +1,1253 @@
+// GAME ENGINE APP - Entry point for the application
+class GameEngineApp:
+    properties:
+        gameFileName: String
+        input: Readable
+        output: Appendable
+
+    constructor(gameFileName, input, output):
+        this.gameFileName = gameFileName
+        this.input = input
+        this.output = output
+
+    function start():
+        try:
+            // Create model from game file
+            gameWorld = new GameWorld(gameFileName)
+
+            // Create controller with model and I/O
+            controller = new GameController(gameWorld, input, output)
+
+            // Start the game
+            controller.play()
+        catch Exception:
+            throw IOException("Error starting game")
+
+// GAME WORLD - Main model class that holds all game elements
+class GameWorld:
+    properties:
+        gameName: String
+        version: String
+        rooms: Map<String, Room>
+        items: Map<String, Item>
+        fixtures: Map<String, Fixture>
+        puzzles: Map<String, Puzzle>
+        monsters: Map<String, Monster>
+        player: Player
+
+    constructor(gameFileName):
+        // Initialize collections
+        this.rooms = new HashMap()
+        this.items = new HashMap()
+        this.fixtures = new HashMap()
+        this.puzzles = new HashMap()
+        this.monsters = new HashMap()
+
+        // Load game data from JSON file
+        loadGameData(gameFileName)
+
+        // Create player in the first room
+        if (rooms not empty):
+            this.player = new Player(first room in rooms)
+        else:
+            throw IOException("No rooms defined")
+
+    function loadGameData(gameFileName):
+        // Parse JSON file
+        gameData = parse JSON from gameFileName
+
+        // Load game metadata
+        this.gameName = gameData.get("name")
+        this.version = gameData.get("version")
+
+        // Load game elements in order (some depend on others)
+        if (gameData contains "items"):
+            loadItems(gameData.get("items"))
+
+        if (gameData contains "fixtures"):
+            loadFixtures(gameData.get("fixtures"))
+
+        if (gameData contains "puzzles"):
+            loadPuzzles(gameData.get("puzzles"))
+
+        if (gameData contains "monsters"):
+            loadMonsters(gameData.get("monsters"))
+
+        if (gameData contains "rooms"):
+            loadRooms(gameData.get("rooms"))
+        else:
+            throw IOException("No rooms defined")
+
+        // Connect rooms after all loaded
+        connectRooms()
+
+    function loadItems(itemsArray):
+        for each item in itemsArray:
+            name = item.get("name")
+            weight = parseInt(item.get("weight"))
+            maxUses = parseInt(item.get("max_uses"))
+            usesRemaining = parseInt(item.get("uses_remaining"))
+            value = parseInt(item.get("value"))
+            whenUsed = item.get("when_used")
+            description = item.get("description")
+
+            newItem = new Item(name, weight, maxUses, usesRemaining, value, whenUsed, description)
+            items.put(name.toUpperCase(), newItem)
+
+    function loadFixtures(fixturesArray):
+        for each fixture in fixturesArray:
+            name = fixture.get("name")
+            weight = parseInt(fixture.get("weight"))
+            description = fixture.get("description")
+
+            newFixture = new Fixture(name, weight, description)
+            fixtures.put(name.toUpperCase(), newFixture)
+
+    function loadPuzzles(puzzlesArray):
+        for each puzzle in puzzlesArray:
+            name = puzzle.get("name")
+            active = parseBoolean(puzzle.get("active"))
+            affectsTarget = parseBoolean(puzzle.get("affects_target"))
+            affectsPlayer = parseBoolean(puzzle.get("affects_player"))
+            solution = puzzle.get("solution")
+            value = parseInt(puzzle.get("value"))
+            description = puzzle.get("description")
+            effects = puzzle.get("effects")
+            target = puzzle.get("target")
+
+            newPuzzle = new Puzzle(name, active, affectsTarget, affectsPlayer, solution, value, description, effects, target)
+            puzzles.put(name.toUpperCase(), newPuzzle)
+
+    function loadMonsters(monstersArray):
+        for each monster in monstersArray:
+            name = monster.get("name")
+            description = monster.get("description")
+            active = parseBoolean(monster.get("active"))
+            damage = parseInt(monster.get("damage"))
+            canAttack = parseBoolean(monster.get("can_attack"))
+            attackDescription = monster.get("attack")
+            effects = monster.get("effects")
+            value = parseInt(monster.get("value"))
+            solution = monster.get("solution")
+            target = monster.get("target")
+
+            newMonster = new Monster(name, description, active, damage, canAttack, attackDescription, effects, value, solution, target)
+            monsters.put(name.toUpperCase(), newMonster)
+
+    function loadRooms(roomsArray):
+        for each room in roomsArray:
+            roomName = room.get("room_name")
+            roomNumber = room.get("room_number")
+            description = room.get("description")
+
+            // Parse exits
+            exits = new HashMap()
+            exits.put(Direction.NORTH, room.get("N"))
+            exits.put(Direction.SOUTH, room.get("S"))
+            exits.put(Direction.EAST, room.get("E"))
+            exits.put(Direction.WEST, room.get("W"))
+
+            // Create room
+            newRoom = new Room(roomName, roomNumber, description, exits)
+
+            // Add items to room if present
+            itemsList = room.get("items")
+            if itemsList is not null and not empty:
+                for each itemName in split(itemsList, ","):
+                    item = items.get(trim(itemName).toUpperCase())
+                    if item is not null:
+                        newRoom.addItem(item)
+
+            // Add fixtures to room if present
+            fixturesList = room.get("fixtures")
+            if fixturesList is not null and not empty:
+                for each fixtureName in split(fixturesList, ","):
+                    fixture = fixtures.get(trim(fixtureName).toUpperCase())
+                    if fixture is not null:
+                        newRoom.addFixture(fixture)
+
+            // Add puzzle to room if present
+            puzzleName = room.get("puzzle")
+            if puzzleName is not null and not empty:
+                puzzle = puzzles.get(trim(puzzleName).toUpperCase())
+                if puzzle is not null:
+                    newRoom.setPuzzle(puzzle)
+
+            // Add monster to room if present
+            monsterName = room.get("monster")
+            if monsterName is not null and not empty:
+                monster = monsters.get(trim(monsterName).toUpperCase())
+                if monster is not null:
+                    newRoom.setMonster(monster)
+
+            // Add room to map
+            rooms.put(roomNumber, newRoom)
+
+    function connectRooms():
+        for each room in rooms:
+            for each direction in Direction.values():
+                targetRoomNumber = room.getExitRoomNumber(direction)
+
+                // Skip if no exit in this direction (0) or blocked (-n)
+                if (targetRoomNumber equals "0"):
+                    continue
+
+                // If positive number, connect to that room
+                if (parseInt(targetRoomNumber) > 0):
+                    targetRoom = rooms.get(targetRoomNumber)
+                    if (targetRoom not null):
+                        room.setExit(direction, targetRoom)
+
+    function applySolution(solution):
+        currentRoom = player.getCurrentRoom()
+
+        // Check for puzzle in current room
+        if (currentRoom has active puzzle):
+            if (puzzle.solve(solution)):
+                // Update player score
+                player.addScore(puzzle.getValue())
+
+                // Unblock paths
+                unblockPaths(currentRoom)
+                return true
+
+        // Check for monster in current room
+        if (currentRoom has active monster):
+            if (monster.getSolution() equalsIgnoreCase solution):
+                monster.defeat()
+
+                // Update player score
+                player.addScore(monster.getValue())
+
+                // Unblock paths
+                unblockPaths(currentRoom)
+                return true
+
+        return false
+
+    function unblockPaths(room):
+        for each direction in Direction.values():
+            exitNumber = room.getExitRoomNumber(direction)
+
+            if (parseInt(exitNumber) < 0):
+                // Convert negative to positive to unblock
+                newExitNumber = String.valueOf(Math.abs(parseInt(exitNumber)))
+                room.setExitRoomNumber(direction, newExitNumber)
+
+                // Set the actual exit
+                targetRoom = rooms.get(newExitNumber)
+                if (targetRoom not null):
+                    room.setExit(direction, targetRoom)
+
+    function getPlayer():
+        return player
+
+    function getGameName():
+        return gameName
+
+    function setPlayerName(name):
+        player.setName(name)
+
+    function saveGame(filename):
+        // Create JSON object for game state
+        saveData = new JSONObject()
+
+        // Save player data
+        playerData = new JSONObject()
+        playerData.put("name", player.getName())
+        playerData.put("health", player.getHealth())
+        playerData.put("score", player.getScore())
+        playerData.put("current_room", player.getCurrentRoom().getRoomNumber())
+
+        // Save inventory
+        inventoryData = new JSONArray()
+        for each item in player.getInventory():
+            itemData = new JSONObject()
+            itemData.put("name", item.getName())
+            itemData.put("uses_remaining", item.getUsesRemaining())
+            inventoryData.add(itemData)
+        playerData.put("inventory", inventoryData)
+
+        saveData.put("player", playerData)
+
+        // Save room states
+        roomsData = new JSONArray()
+        for each room in rooms.values():
+            roomData = new JSONObject()
+            roomData.put("room_number", room.getRoomNumber())
+
+            // Save puzzle state
+            if room.getPuzzle() is not null:
+                roomData.put("puzzle_active", room.getPuzzle().isActive())
+
+            // Save monster state
+            if room.getMonster() is not null:
+                roomData.put("monster_active", room.getMonster().isActive())
+
+            // Save room exits
+            exitsData = new JSONObject()
+            for each direction in Direction.values():
+                exitsData.put(direction.toString(), room.getExitRoomNumber(direction))
+            roomData.put("exits", exitsData)
+
+            // Save items in room
+            roomItemsData = new JSONArray()
+            for each item in room.getItems():
+                roomItemsData.add(item.getName())
+            roomData.put("items", roomItemsData)
+
+            roomsData.add(roomData)
+
+        saveData.put("rooms", roomsData)
+        saveData.put("game_name", gameName)
+        saveData.put("version", version)
+
+        // Write to file
+        write saveData to filename
+
+    function loadGame(filename):
+        // Read JSON from file
+        saveData = parse JSON from filename
+
+        // Load player data
+        playerData = saveData.get("player")
+        playerName = playerData.get("name")
+        health = playerData.get("health")
+        score = playerData.get("score")
+        currentRoomNumber = playerData.get("current_room")
+
+        // Load inventory
+        inventoryData = playerData.get("inventory")
+        inventory = new ArrayList()
+
+        for each itemData in inventoryData:
+            itemName = itemData.get("name")
+            usesRemaining = itemData.get("uses_remaining")
+
+            item = items.get(itemName.toUpperCase())
+            if item is not null:
+                item.setUsesRemaining(usesRemaining)
+                inventory.add(item)
+
+        // Set player state
+        player.setName(playerName)
+        player.setHealth(health)
+        player.setScore(score)
+        player.setCurrentRoom(rooms.get(currentRoomNumber))
+        player.setInventory(inventory)
+
+        // Load room states
+        roomsData = saveData.get("rooms")
+
+        for each roomData in roomsData:
+            roomNumber = roomData.get("room_number")
+            room = rooms.get(roomNumber)
+
+            if room is not null:
+                // Load puzzle state
+                if roomData contains "puzzle_active" and room.getPuzzle() is not null:
+                    puzzleActive = roomData.get("puzzle_active")
+                    room.getPuzzle().setActive(puzzleActive)
+
+                // Load monster state
+                if roomData contains "monster_active" and room.getMonster() is not null:
+                    monsterActive = roomData.get("monster_active")
+                    room.getMonster().setActive(monsterActive)
+
+                // Load room exits
+                if roomData contains "exits":
+                    exitsData = roomData.get("exits")
+
+                    for each direction in Direction.values():
+                        exitNumber = exitsData.get(direction.toString())
+                        room.setExitRoomNumber(direction, exitNumber)
+
+                        // Update actual exit connections
+                        if exitNumber not equals "0" and parseInt(exitNumber) > 0:
+                            targetRoom = rooms.get(exitNumber)
+                            if targetRoom is not null:
+                                room.setExit(direction, targetRoom)
+                        else:
+                            room.setExit(direction, null)
+
+                // Load items in room
+                if roomData contains "items":
+                    roomItemsData = roomData.get("items")
+                    room.clearItems()
+
+                    for each itemName in roomItemsData:
+                        item = items.get(itemName.toUpperCase())
+                        if item is not null:
+                            room.addItem(item)
+
+// DIRECTION - Enum of possible movement directions
+enum Direction:
+    NORTH, SOUTH, EAST, WEST
+
+    function getOpposite():
+        if this == NORTH: return SOUTH
+        if this == SOUTH: return NORTH
+        if this == EAST: return WEST
+        if this == WEST: return EAST
+
+// ROOM - Represents a location in the game
+class Room:
+    properties:
+        name: String
+        roomNumber: String
+        description: String
+        puzzle: Puzzle
+        monster: Monster
+        items: List<Item>
+        fixtures: List<Fixture>
+        exits: Map<Direction, Room>
+        exitRoomNumbers: Map<Direction, String>
+
+    constructor(name, roomNumber, description, exits):
+        this.name = name
+        this.roomNumber = roomNumber
+        this.description = description
+        this.exitRoomNumbers = copy of exits
+        this.items = new ArrayList()
+        this.fixtures = new ArrayList()
+        this.exits = new HashMap()
+
+    function getName():
+        return name
+
+    function getRoomNumber():
+        return roomNumber
+
+    function getDescription():
+        return description
+
+    function addItem(item):
+        items.add(item)
+
+    function removeItem(item):
+        return items.remove(item)
+
+    function getItem(name):
+        for each item in items:
+            if item.getName() equalsIgnoreCase name:
+                return item
+        return null
+
+    function getItems():
+        return copy of items list
+
+    function clearItems():
+        items.clear()
+
+    function addFixture(fixture):
+        fixtures.add(fixture)
+
+    function getFixture(name):
+        for each fixture in fixtures:
+            if fixture.getName() equalsIgnoreCase name:
+                return fixture
+        return null
+
+    function getFixtures():
+        return copy of fixtures list
+
+    function setPuzzle(puzzle):
+        this.puzzle = puzzle
+
+    function getPuzzle():
+        return puzzle
+
+    function setMonster(monster):
+        this.monster = monster
+
+    function getMonster():
+        return monster
+
+    function setExit(direction, room):
+        exits.put(direction, room)
+
+    function getExit(direction):
+        return exits.get(direction)
+
+    function setExitRoomNumber(direction, number):
+        exitRoomNumbers.put(direction, number)
+
+    function getExitRoomNumber(direction):
+        return exitRoomNumbers.getOrDefault(direction, "0")
+
+// PLAYER - Represents the user's character
+class Player:
+    properties:
+        name: String
+        health: Integer
+        inventory: List<Item>
+        currentRoom: Room
+        score: Integer
+        MAX_WEIGHT: Integer (constant = 13)
+        MAX_HEALTH: Integer (constant = 100)
+        attackPower: Integer
+        criticalChance: Integer
+
+    constructor(startRoom):
+        this.name = "Player"
+        this.health = MAX_HEALTH
+        this.inventory = new ArrayList()
+        this.currentRoom = startRoom
+        this.score = 0
+        this.attackPower = 10
+        this.criticalChance = 15
+
+    function getName():
+        return name
+
+    function setName(name):
+        if name is null or empty:
+            throw IllegalArgumentException("Name cannot be null or empty")
+        this.name = name
+
+    function getHealth():
+        return health
+
+    function setHealth(health):
+        this.health = max(0, min(health, MAX_HEALTH))
+
+    function takeDamage(amount):
+        if amount < 0:
+            throw IllegalArgumentException("Damage amount cannot be negative")
+        health = max(0, health - amount)
+
+    function getHealthStatus():
+        if health <= 0: return "ASLEEP"
+        if health < 40: return "WOOZY"
+        if health < 70: return "FATIGUED"
+        return "AWAKE"
+
+    function addToInventory(item):
+        if item is null:
+            throw IllegalArgumentException("Item cannot be null")
+
+        if getInventoryWeight() + item.getWeight() <= MAX_WEIGHT:
+            inventory.add(item)
+            return true
+        return false
+
+    function removeFromInventory(item):
+        if item is null:
+            throw IllegalArgumentException("Item cannot be null")
+        return inventory.remove(item)
+
+    function getItemFromInventory(name):
+        if name is null or empty:
+            throw IllegalArgumentException("Item name cannot be null or empty")
+
+        for each item in inventory:
+            if item.getName() equalsIgnoreCase name:
+                return item
+        return null
+
+    function getInventory():
+        return copy of inventory list
+
+    function setInventory(inventory):
+        if inventory is null:
+            throw IllegalArgumentException("Inventory cannot be null")
+        this.inventory.clear()
+        this.inventory.addAll(inventory)
+
+    function getInventoryWeight():
+        totalWeight = 0
+        for each item in inventory:
+            totalWeight += item.getWeight()
+        return totalWeight
+
+    function getCurrentRoom():
+        return currentRoom
+
+    function setCurrentRoom(room):
+        if room is null:
+            throw IllegalArgumentException("Room cannot be null")
+        this.currentRoom = room
+
+    function addScore(points):
+        if points < 0:
+            throw IllegalArgumentException("Points cannot be negative")
+        this.score += points
+
+    function setScore(score):
+        if score < 0:
+            throw IllegalArgumentException("Score cannot be negative")
+        this.score = score
+
+    function getScore():
+        return score
+
+    function getRank():
+        if score >= 1000: return "Adventure Master"
+        if score >= 750: return "Expert Explorer"
+        if score >= 500: return "Seasoned Adventurer"
+        if score >= 250: return "Novice Explorer"
+        return "Beginner"
+
+    function getMaxWeight():
+        return MAX_WEIGHT
+
+    function attack(monster):
+        // Check if monster is valid target
+        if monster is null or not monster.isActive():
+            return new AttackResult(false, 0, "No valid target to attack")
+
+        // Calculate damage with random variation
+        damage = attackPower + random(0 to 4)
+
+        // Check for critical hit
+        isCritical = random(1 to 100) <= criticalChance
+        if isCritical:
+            damage *= 2
+
+        // Apply damage to monster
+        resultString = monster.takeDamage(damage, isCritical)
+
+        // Create result based on monster state
+        defeated = not monster.isActive()
+        remainingHealth = monster.getHealthPercentage()
+
+        return new AttackResult(true, damage, isCritical, defeated, remainingHealth)
+
+    // Inner class for attack result
+    class AttackResult:
+        properties:
+            success: Boolean
+            damage: Integer
+            critical: Boolean
+            defeated: Boolean
+            healthRemaining: Integer
+            message: String
+
+        constructor(success, damage, critical, defeated, healthRemaining):
+            this.success = success
+            this.damage = damage
+            this.critical = critical
+            this.defeated = defeated
+            this.healthRemaining = healthRemaining
+            this.message = ""
+
+        constructor(success, damage, message):
+            this.success = success
+            this.damage = damage
+            this.critical = false
+            this.defeated = false
+            this.healthRemaining = 0
+            this.message = message
+
+// ITEM - Represents an object that can be picked up and used
+class Item:
+    properties:
+        name: String
+        weight: Integer
+        maxUses: Integer
+        usesRemaining: Integer
+        value: Integer
+        whenUsed: String
+        description: String
+
+    constructor(name, weight, maxUses, usesRemaining, value, whenUsed, description):
+        this.name = name
+        this.weight = weight
+        this.maxUses = maxUses
+        this.usesRemaining = usesRemaining
+        this.value = value
+        this.whenUsed = whenUsed
+        this.description = description
+
+    function getName():
+        return name
+
+    function getWeight():
+        return weight
+
+    function getMaxUses():
+        return maxUses
+
+    function getUsesRemaining():
+        return usesRemaining
+
+    function setUsesRemaining(uses):
+        this.usesRemaining = uses
+
+    function getValue():
+        return value
+
+    function getDescription():
+        return description
+
+    function getWhenUsed():
+        return whenUsed
+
+    function use():
+        if usesRemaining > 0:
+            usesRemaining--
+            return true
+        return false
+
+// FIXTURE - Represents an immovable object in a room
+class Fixture:
+    properties:
+        name: String
+        weight: Integer  // Always > 200 to be immovable
+        description: String
+
+    constructor(name, weight, description):
+        this.name = name
+        this.weight = weight
+        this.description = description
+
+    function getName():
+        return name
+
+    function getWeight():
+        return weight
+
+    function getDescription():
+        return description
+
+// PUZZLE - Represents a challenge that blocks a path
+class Puzzle:
+    properties:
+        name: String
+        active: Boolean
+        affectsTarget: Boolean
+        affectsPlayer: Boolean
+        solution: String
+        value: Integer
+        description: String
+        effects: String
+        target: String
+
+    constructor(name, active, affectsTarget, affectsPlayer, solution, value, description, effects, target):
+        this.name = name
+        this.active = active
+        this.affectsTarget = affectsTarget
+        this.affectsPlayer = affectsPlayer
+        this.solution = solution
+        this.value = value
+        this.description = description
+        this.effects = effects
+        this.target = target
+
+    function getName():
+        return name
+
+    function isActive():
+        return active
+
+    function setActive(active):
+        this.active = active
+
+    function affectsTarget():
+        return affectsTarget
+
+    function affectsPlayer():
+        return affectsPlayer
+
+    function getValue():
+        return value
+
+    function getDescription():
+        return description
+
+    function getEffects():
+        return effects
+
+    function getTarget():
+        return target
+
+    function getSolution():
+        return solution
+
+    function solve(solution):
+        // Can't solve inactive puzzles
+        if not active:
+            return false
+
+        // Check for text answer (quoted)
+        if this.solution starts with "'" and ends with "'":
+            correctAnswer = this.solution without quotes
+            if solution equalsIgnoreCase correctAnswer:
+                active = false
+                return true
+        // Check for item solution
+        else if solution equalsIgnoreCase this.solution:
+            active = false
+            return true
+
+        return false
+
+// MONSTER - Represents an enemy that can attack the player
+class Monster:
+    properties:
+        name: String
+        description: String
+        active: Boolean
+        damage: Integer
+        canAttack: Boolean
+        attackDescription: String
+        effects: String
+        value: Integer
+        solution: String
+        target: String
+        health: Integer
+        maxHealth: Integer
+
+    constructor(name, description, active, damage, canAttack, attackDescription, effects, value, solution, target):
+        this.name = name
+        this.description = description
+        this.active = active
+        this.damage = damage
+        this.canAttack = canAttack
+        this.attackDescription = attackDescription
+        this.effects = effects
+        this.value = value
+        this.solution = solution
+        this.target = target
+        this.maxHealth = 100
+        this.health = maxHealth
+
+    function getName():
+        return name
+
+    function getDescription():
+        return description
+
+    function isActive():
+        return active
+
+    function setActive(active):
+        this.active = active
+
+    function getDamage():
+        return damage
+
+    function canAttack():
+        return canAttack
+
+    function getAttackDescription():
+        return attackDescription
+
+    function getEffects():
+        return effects
+
+    function getValue():
+        return value
+
+    function getSolution():
+        return solution
+
+    function getTarget():
+        return target
+
+    function getHealthPercentage():
+        return (health / maxHealth) * 100
+
+    function attack(player):
+        if active and canAttack:
+            player.takeDamage(abs(damage))
+            return abs(damage)
+        return 0
+
+    function defeat():
+        this.active = false
+        this.health = 0
+
+    function takeDamage(amount, isCritical):
+        if not active:
+            return "Monster is already defeated"
+
+        health -= amount
+
+        if health <= 0:
+            health = 0
+            defeat()
+            return "Monster has been defeated"
+
+        return "Monster took damage but is still active"
+
+// GAME CONTROLLER - Handles user input and game output
+class GameController:
+    properties:
+        game: GameWorld
+        scanner: Scanner
+        output: Appendable
+        running: Boolean
+
+    constructor(game, input, output):
+        this.game = game
+        this.scanner = new Scanner(input)
+        this.output = output
+        this.running = false
+
+    function play():
+        // Start the game
+        running = true
+
+        // Get player name
+        print("Welcome to " + game.getGameName())
+        print("Enter your name: ")
+        name = scanner.nextLine()
+        game.setPlayerName(name)
+
+        // Main game loop
+        while running and scanner has next line:
+            // Show current room
+            showRoom()
+
+            // Check if player died
+            if game.getPlayer().getHealth() <= 0:
+                print("Game over!")
+                running = false
+                return
+
+            // Show commands and get input
+            showCommands()
+            command = scanner.nextLine().toLowerCase()
+
+            // Process command
+            handleCommand(command)
+
+    function showRoom():
+        player = game.getPlayer()
+        room = player.getCurrentRoom()
+
+        // Show health
+        print("Health: " + player.getHealth() + " (" + player.getHealthStatus() + ")")
+
+        // Show room name
+        print("You are in " + room.getName())
+
+        // Show room description or puzzle/monster effects
+        if room has active puzzle that affects target:
+            print(puzzle.getEffects())
+        else if room has active monster:
+            print("A monster " + monster.getName() + " is here!")
+
+            // Monster may attack
+            if monster.canAttack():
+                damage = monster.attack(player)
+                if damage > 0:
+                    print("The monster attacks! You take " + damage + " damage!")
+        else:
+            print(room.getDescription())
+
+        // List items in room
+        if room has items:
+            print("Items here: " + join item names)
+
+    function showCommands():
+        print("\nCommands:")
+        print("- Movement: (N)orth, (S)outh, (E)ast, (W)est")
+        print("- Actions: (I)nventory, (L)ook, (T)ake [item], (D)rop [item]")
+        print("- Interaction: e(X)amine [target], (U)se [item], (A)nswer [text], attac(K)")
+        print("- Game: Save, Restore, (Q)uit")
+        print("What do you want to do? ")
+
+    function handleCommand(command):
+        if command is empty:
+            return
+
+        // Movement commands
+        if command is "n" or "north":
+            move(NORTH)
+        else if command is "s" or "south":
+            move(SOUTH)
+        else if command is "e" or "east":
+            move(EAST)
+        else if command is "w" or "west":
+            move(WEST)
+
+        // Look command
+        else if command is "l" or "look":
+            showRoom()
+
+        // Inventory command
+        else if command is "i" or "inventory":
+            showInventory()
+
+        // Take command
+        else if command starts with "t " or "take ":
+            itemName = extract item name from command
+            takeItem(itemName)
+
+        // Drop command
+        else if command starts with "d " or "drop ":
+            itemName = extract item name from command
+            dropItem(itemName)
+
+        // Examine command
+        else if command starts with "x " or "examine ":
+            target = extract target from command
+            examine(target)
+
+        // Use command
+        else if command starts with "u " or "use ":
+            itemName = extract item name from command
+            useItem(itemName)
+
+        // Answer command
+        else if command starts with "a " or "answer ":
+            answer = extract answer from command
+            answer(answer)
+
+        // Attack command
+        else if command is "k" or "attack":
+            attackMonster()
+
+        // Save/restore commands
+        else if command is "save":
+            saveGame()
+        else if command is "restore":
+            loadGame()
+
+        // Quit command
+        else if command is "q" or "quit":
+            print("Thanks for playing!")
+            running = false
+
+        else:
+            print("I don't understand that command.")
+
+    function move(direction):
+        currentRoom = game.getPlayer().getCurrentRoom()
+        exitNumber = currentRoom.getExitRoomNumber(direction)
+
+        // Check for wall (0)
+        if exitNumber equals "0":
+            print("You can't go that way.")
+            return
+
+        // Check for blocked path (negative)
+        if parseInt(exitNumber) < 0:
+            if currentRoom has active puzzle:
+                print("A puzzle blocks your way.")
+            else if currentRoom has active monster:
+                print("A monster blocks your way!")
+                // Monster may attack
+                if monster.canAttack():
+                    damage = monster.attack(game.getPlayer())
+                    if damage > 0:
+                        print("The monster attacks!")
+            else:
+                print("Something blocks your way.")
+            return
+
+        // Move to new room
+        nextRoom = currentRoom.getExit(direction)
+        if nextRoom not null:
+            game.getPlayer().setCurrentRoom(nextRoom)
+            print("You move " + direction.toString())
+        else:
+            print("You can't go that way right now.")
+
+    function showInventory():
+        player = game.getPlayer()
+
+        print("Your inventory (" + player.getInventoryWeight() + "/" + player.getMaxWeight() + "):")
+
+        if player.getInventory() is empty:
+            print("You're not carrying anything.")
+            return
+
+        for each item in player.getInventory():
+            print("- " + item.getName() + " (uses left: " + item.getUsesRemaining() + ")")
+
+    function takeItem(itemName):
+            if itemName is empty:
+                print("What do you want to take?")
+                return
+
+            currentRoom = game.getPlayer().getCurrentRoom()
+            item = currentRoom.getItem(itemName)
+
+            if item is null:
+                print("There's no " + itemName + " here.")
+                return
+
+            if game.getPlayer().addToInventory(item):
+                currentRoom.removeItem(item)
+                print("You pick up the " + item.getName() + ".")
+            else:
+                print("You can't carry any more. Drop something first.")
+
+        function dropItem(itemName):
+            if itemName is empty:
+                print("What do you want to drop?")
+                return
+
+            player = game.getPlayer()
+            item = player.getItemFromInventory(itemName)
+
+            if item is null:
+                print("You don't have a " + itemName + ".")
+                return
+
+            if player.removeFromInventory(item):
+                player.getCurrentRoom().addItem(item)
+                print("You drop the " + item.getName() + ".")
+            else:
+                print("You can't drop that for some reason.")
+
+        function examine(target):
+            if target is empty:
+                print("What do you want to examine?")
+                return
+
+            // Check inventory first
+            player = game.getPlayer()
+            item = player.getItemFromInventory(target)
+
+            if item is not null:
+                print(item.getDescription())
+                return
+
+            // Check room items
+            currentRoom = player.getCurrentRoom()
+            roomItem = currentRoom.getItem(target)
+
+            if roomItem is not null:
+                print(roomItem.getDescription())
+                return
+
+            // Check fixtures
+            fixture = currentRoom.getFixture(target)
+
+            if fixture is not null:
+                print(fixture.getDescription())
+                return
+
+            print("You don't see a " + target + " here.")
+
+        function useItem(itemName):
+            if itemName is empty:
+                print("What do you want to use?")
+                return
+
+            player = game.getPlayer()
+            item = player.getItemFromInventory(itemName)
+
+            if item is null:
+                print("You don't have a " + itemName + ".")
+                return
+
+            if item.getUsesRemaining() <= 0:
+                print("The " + item.getName() + " can't be used anymore.")
+                return
+
+            // Try to solve puzzle or defeat monster
+            currentRoom = player.getCurrentRoom()
+            solved = game.applySolution(item.getName())
+
+            if solved:
+                if currentRoom.getPuzzle() is not null and not currentRoom.getPuzzle().isActive():
+                    print("You used the " + item.getName() + " to solve the puzzle!")
+                    print("You earned " + currentRoom.getPuzzle().getValue() + " points!")
+                else if currentRoom.getMonster() is not null and not currentRoom.getMonster().isActive():
+                    print("You used the " + item.getName() + " to defeat the monster!")
+                    print("You earned " + currentRoom.getMonster().getValue() + " points!")
+            else:
+                // Generic use
+                print("You use the " + item.getName() + ".")
+                print(item.getWhenUsed())
+
+            // Reduce uses
+            item.use()
+
+        function answer(answer):
+            if answer is empty:
+                print("What's your answer?")
+                return
+
+            currentRoom = game.getPlayer().getCurrentRoom()
+            puzzle = currentRoom.getPuzzle()
+
+            if puzzle is null or not puzzle.isActive():
+                print("There's no puzzle here to solve.")
+                return
+
+            // Check if it's a text puzzle
+            if not puzzle.getSolution().startsWith("'"):
+                print("This puzzle needs an item, not an answer.")
+                return
+
+            // Try to solve
+            solved = game.applySolution(answer)
+
+            if solved:
+                print("Correct!")
+                print("You earned " + puzzle.getValue() + " points!")
+            else:
+                print("That's not right. Try something else.")
+
+        function attackMonster():
+            player = game.getPlayer()
+            currentRoom = player.getCurrentRoom()
+            monster = currentRoom.getMonster()
+
+            // Check if there's a monster to attack
+            if monster is null or not monster.isActive():
+                print("There's nothing here to attack.")
+                return
+
+            // Player attacks monster
+            attackResult = player.attack(monster)
+
+            if attackResult.success:
+                // Show attack details
+                if attackResult.critical:
+                    print("CRITICAL HIT! You attack the monster for " + attackResult.damage + " damage!")
+                else:
+                    print("You attack the monster for " + attackResult.damage + " damage!")
+
+                // Show monster health status
+                healthPercentage = attackResult.healthRemaining
+                if healthPercentage > 75:
+                    print("The monster appears mostly unharmed.")
+                else if healthPercentage > 50:
+                    print("The monster appears wounded.")
+                else if healthPercentage > 25:
+                    print("The monster appears badly injured.")
+                else if healthPercentage > 0:
+                    print("The monster appears to be near death!")
+
+                // Check if monster was defeated
+                if attackResult.defeated:
+                    print("You defeated the " + monster.getName() + "!")
+                    print("You earned " + monster.getValue() + " points!")
+
+                    // Unblock any paths
+                    game.unblockPaths(currentRoom)
+                else:
+                    // Monster counterattacks
+                    if monster.canAttack():
+                        damage = monster.attack(player)
+                        if damage > 0:
+                            print(monster.getAttackDescription())
+                            print("You took " + damage + " damage!")
+                            print("Your health: " + player.getHealth() + " (" + player.getHealthStatus() + ")")
+            else:
+                // Attack missed or failed
+                print(attackResult.message)
+
+        function saveGame():
+            try:
+                game.saveGame("saved_game.json")
+                print("Game saved!")
+            catch Exception:
+                print("Couldn't save the game.")
+
+        function loadGame():
+            try:
+                game.loadGame("saved_game.json")
+                print("Game loaded!")
+            catch Exception:
+                print("Couldn't load the game.")
+
+        function print(message):
+            output.append(message + "\n")
